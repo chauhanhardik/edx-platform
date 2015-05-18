@@ -19,12 +19,14 @@ import logging
 import random
 from collections import OrderedDict
 from operator import itemgetter
-
 from lxml import etree
 from pkg_resources import resource_string
 
 from django.conf import settings
 
+from openedx.core.lib.cache_utils import memoize_request_cache
+
+from xblock.core import XBlock
 from xblock.fields import ScopeIds
 from xblock.runtime import KvsFieldData
 
@@ -285,6 +287,7 @@ class VideoModule(VideoFields, VideoTranscriptsMixin, VideoStudentViewHandlers, 
         })
 
 
+@XBlock.wants("request_cache")
 class VideoDescriptor(VideoFields, VideoTranscriptsMixin, VideoStudioViewHandlers, TabsEditingDescriptor, EmptyDataRawDescriptor):
     """
     Descriptor for `VideoModule`.
@@ -674,3 +677,31 @@ class VideoDescriptor(VideoFields, VideoTranscriptsMixin, VideoStudioViewHandler
         xblock_body["content_type"] = "Video"
 
         return xblock_body
+
+    @property
+    def request_cache(self):
+        return self.runtime.service(self, "request_cache")
+
+    @memoize_request_cache('request_cache')
+    def get_val_data_for_course(self, video_profile_names, course_id):
+        return edxval_api.get_video_info_for_course_and_profiles(unicode(course_id), video_profile_names)
+
+    def get_data(self, params):
+        course_id = self.location.course_key
+        video_profile_names = params.get("profiles", [])
+        val_course_data = self.get_val_data_for_course(video_profile_names, course_id)
+
+        # Get encoded videos
+        val_video_data = val_course_data.get(self.edx_video_id, {})
+
+        transcripts = {
+            lang: self.runtime.handler_url(self, 'transcript', 'download', query="lang=" + lang, thirdparty=True)
+            for lang in self.available_translations(verify_assets=False)
+        }
+
+        return {
+            "only_on_web": self.only_on_web,
+            "duration": val_video_data.get('duration', None),
+            "transcripts": transcripts,
+            "encoded_videos": val_video_data.get('profiles'),
+        }
